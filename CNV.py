@@ -232,6 +232,9 @@ class CNV_TestSheet(QMainWindow, form_class):
 
         self.input_field.textChanged.connect(self.on_text_changed)
 
+        self.caseComboBox.currentIndexChanged.connect(self.update_recommend_browser)
+
+
         self.fileBrowse.released.connect(self.TargetfileOpen)
         self.fileOpenButton.released.connect(self.fileOpenStart)
         # self.startButton.released.connect(self.CNV_Start)
@@ -243,6 +246,16 @@ class CNV_TestSheet(QMainWindow, form_class):
 
         # Initialize progress bar
         self.progressBar.setValue(0)
+
+    def update_recommend_browser(self):
+        # 현재 선택된 콤보박스 항목 확인
+        selected_case = self.caseComboBox.currentText()
+
+        # 선택된 항목에 해당하는 ClinVar 링크를 recommendBrowser에 표시
+        if selected_case in self.clinvar_cases:
+            links = self.clinvar_cases[selected_case]
+            self.recommendBrowser.clear()
+            self.recommendBrowser.append("<p>".join(links))
 
     def on_text_changed(self):
         input_text = self.input_field.text().strip().lower()
@@ -270,6 +283,10 @@ class CNV_TestSheet(QMainWindow, form_class):
         return self.fileName.setText(fname)
 
     def fileOpenStart(self):
+        self.caseComboBox.clear()
+
+        self.clinvar_cases = {}
+
         self.result_text = ''
         self.links = []
         self.disease_lst = []
@@ -340,12 +357,17 @@ class CNV_TestSheet(QMainWindow, form_class):
                 lambda x: len(x) > 1)
             file_info_df = file_info_df.sort_values(by='MostRecentSubmission', ascending=False)
 
+            self.clinvar_cases[f'Case {self.counter}'] = []
+
             for idx, id in enumerate([i.replace('.xml','').split('_')[-1] for i in list(file_info_df['File'])]):
-                self.links.append(f'<a href="https://www.ncbi.nlm.nih.gov/clinvar/variation/{id}/">Case_{self.counter}_ClinVar Link{idx+1}: {id}</a>')
-            if self.counter == self.total:
-                self.recommendBrowser.setHtml('<p>'.join(self.links))
-            else:
-                self.links.append('■■■■■■■■■■■■■■■■■■■■■■■■■■■')
+                self.clinvar_cases[f'Case {self.counter}'].append(f'<a href="https://www.ncbi.nlm.nih.gov/clinvar/variation/{id}/">Case_{self.counter}_ClinVar Link{idx+1}: {id}</a>')
+
+                #### 콤보박스로 변경 후 폐기된 부분 ####
+                # self.links.append(f'<a href="https://www.ncbi.nlm.nih.gov/clinvar/variation/{id}/">Case_{self.counter}_ClinVar Link{idx+1}: {id}</a>')
+            # if self.counter == self.total:
+            #     self.recommendBrowser.setHtml('<p>'.join(self.links))
+            # else:
+            #     self.links.append('■■■■■■■■■■■■■■■■■■■■■■■■■■■')
             # self.recommendBrowser.setText()
 
             # 기준치 오버랩 검사
@@ -370,6 +392,10 @@ class CNV_TestSheet(QMainWindow, form_class):
             self.justify_overlap = (self.overlap_length / self.range_length) * 100
 
             self.CNV_Start()
+
+        # print(self.clinvar_cases)
+        # 콤보박스 키 추가
+        self.caseComboBox.addItems(list(self.clinvar_cases.keys()))
 
     def center(self):
         qr = self.frameGeometry()
@@ -504,6 +530,7 @@ class CNV_TestSheet(QMainWindow, form_class):
                 if self.counter == self.total:
                     return self.output_area.setText(self.result_text)
                 # return self.CNV_Save(sheetText)
+
         except Exception as e:
             return QMessageBox.warning(self, 'Warning', f'알려지지 않은 오류:\n{e}')
 
