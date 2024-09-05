@@ -1,19 +1,19 @@
-from PyQt5 import uic, QtWidgets
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import QThread, pyqtSignal
-import re, sys, os, subprocess, psutil
-import time, requests
+import os
+import psutil
+import re
+import requests
+import subprocess
+import sys
+import time
 import xml.etree.ElementTree as ET
+
 import pandas as pd
+from PyQt5 import uic, QtWidgets
+from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtWidgets import *
+
 import disease_info_hardcoded
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
