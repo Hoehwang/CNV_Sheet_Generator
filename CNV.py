@@ -72,6 +72,13 @@ def find_and_kill_process_using_file(file_path):
             continue
     return False
 
+def fetch_xml_from_url(url):
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.content
+    else:
+        return None
+
 
 form = resource_path(r'.\CNV.ui')
 form_class = uic.loadUiType(form)[0]
@@ -86,96 +93,63 @@ class Worker(QThread):
         self.download_dir = download_dir
 
     def run(self):
-        options = Options()
-        options.add_argument('user-agent=Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100 Safari/537.36')
-        options.add_experimental_option("prefs", {
-            "download.default_directory": self.download_dir,  # 다운로드 위치 설정
-            "download.prompt_for_download": False,  # 다운로드 대화 상자 비활성화
-            "download.directory_upgrade": True,
-            "safebrowsing.enabled": True
-        })
+        orphaXml_Loc = 'https://raw.githubusercontent.com/Orphanet/Orphadata_aggregated/master/Rare%20diseases%20with%20associated%20phenotypes/en_product4.xml'
 
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
+        xml_data = fetch_xml_from_url(orphaXml_Loc)
+        root = ET.fromstring(xml_data)
 
-        driver.get('https://www.orphadata.com/phenotypes/')
-        time.sleep(4)
+        data = {
+            "Name": [],
+            "OrphaCode": [],
+            "HPOTerm": [],
+            "HPOFrequency": [],
+            "HPOKor": []  # HPOKor 열 추가
+        }
 
-        driver.execute_script("document.body.style.zoom='80%'")
-        driver.execute_script("window.scrollBy(0, 480);")
+        for disorder_set in root.findall('.//HPODisorderSetStatus'):
+            disorder = disorder_set.find('Disorder')
+            disorder_name = disorder.find('Name').text
+            orpha_code = disorder.find('OrphaCode').text
 
-        e = driver.find_element(By.CSS_SELECTOR,'#custom-2 > div > div > div > div > div > div > div > div.h-accordion-item.h-accordion-item-first-child.style-5355.style-local-1744-c15.position-relative.h-element > a')
-        driver.execute_script("arguments[0].click();", e)
-        currentNum = int(driver.find_element(by=By.CSS_SELECTOR, value='#tablepress-16 > tbody > tr.row-2.even > td.column-3').text)
+            for association in disorder.findall('.//HPODisorderAssociation'):
+                hpo_term = association.find('.//HPOTerm').text
+                hpo_frequency = association.find('.//HPOFrequency/Name').text
 
-        if currentNum != len(self.df['Name'].unique()):
-            xml_button = driver.find_element(by=By.CSS_SELECTOR,value='#tablepress-16 > tbody > tr.row-2.even > td.column-2 > a')
-            driver.execute_script("arguments[0].click();", xml_button)
-            while True:
-                files = os.listdir(self.download_dir)
-                if any(file.startswith('en_product') for file in files):
-                    driver.quit()
-                    break
-                else:
-                    time.sleep(1)
+                data['Name'].append(disorder_name)
+                data['OrphaCode'].append(orpha_code)
+                data['HPOTerm'].append(hpo_term)
+                data['HPOFrequency'].append(hpo_frequency)
+                data['HPOKor'].append(None)  # 초기에는 None으로 설정
 
-            tree = ET.parse(rf"{self.download_dir}\en_product4.xml")
-            root = tree.getroot()
+        new_df = pd.DataFrame(data)
 
-            data = {
-                "Name": [],
-                "OrphaCode": [],
-                "HPOTerm": [],
-                "HPOFrequency": [],
-                "HPOKor": []  # HPOKor 열 추가
-            }
+        csv_path = './CNV_info.csv'
+        hpo_translation_df = pd.read_csv(csv_path)
 
-            for disorder_set in root.findall('.//HPODisorderSetStatus'):
-                disorder = disorder_set.find('Disorder')
-                disorder_name = disorder.find('Name').text
-                orpha_code = disorder.find('OrphaCode').text
+        unique_hpoterms = new_df['HPOTerm'].unique()
 
-                for association in disorder.findall('.//HPODisorderAssociation'):
-                    hpo_term = association.find('.//HPOTerm').text
-                    hpo_frequency = association.find('.//HPOFrequency/Name').text
+        hpo_kor_dict = {}
+        total_terms = len(unique_hpoterms)
+        for i, hpo_term in enumerate(unique_hpoterms):
+            matching_row = hpo_translation_df[hpo_translation_df['HPOTerm'] == hpo_term]
+            if not matching_row.empty:
+                hpo_kor_dict[hpo_term] = matching_row.iloc[0]['HPOKor']
+            # 진행 상황 업데이트
+            progress_value = int((i + 1) / total_terms * 100)
+            self.progress.emit(progress_value)
 
-                    data['Name'].append(disorder_name)
-                    data['OrphaCode'].append(orpha_code)
-                    data['HPOTerm'].append(hpo_term)
-                    data['HPOFrequency'].append(hpo_frequency)
-                    data['HPOKor'].append(None)  # 초기에는 None으로 설정
+        new_df['HPOKor'] = new_df['HPOTerm'].map(hpo_kor_dict)
+        if os.path.exists(csv_path):
+            force_kill_process_using_file(csv_path)
 
-            new_df = pd.DataFrame(data)
+        new_df.to_csv(csv_path)
 
-            csv_path = './CNV_info.csv'
-            xml_path = './en_product4.xml'
-            hpo_translation_df = pd.read_csv(csv_path)
+        self.df = pd.read_csv(csv_path)
+        self.df['Name_lower'] = self.df['Name'].str.lower()
 
-            unique_hpoterms = new_df['HPOTerm'].unique()
-
-            hpo_kor_dict = {}
-            total_terms = len(unique_hpoterms)
-            for i, hpo_term in enumerate(unique_hpoterms):
-                matching_row = hpo_translation_df[hpo_translation_df['HPOTerm'] == hpo_term]
-                if not matching_row.empty:
-                    hpo_kor_dict[hpo_term] = matching_row.iloc[0]['HPOKor']
-                # 진행 상황 업데이트
-                progress_value = int((i + 1) / total_terms * 100)
-                self.progress.emit(progress_value)
-
-            new_df['HPOKor'] = new_df['HPOTerm'].map(hpo_kor_dict)
-            if os.path.exists(csv_path):
-                force_kill_process_using_file(csv_path)
-            os.remove(xml_path)
-
-            new_df.to_csv(csv_path)
-
-            self.df = pd.read_csv(csv_path)
-            self.df['Name_lower'] = self.df['Name'].str.lower()
-
-            self.hpo_dict = self.df[['HPOTerm', 'HPOKor']].drop_duplicates()
-            self.hpo_dict = self.hpo_dict.set_index('HPOTerm')['HPOKor'].to_dict()
-            self.term_list = list(self.hpo_dict.keys())
+        self.hpo_dict = self.df[['HPOTerm', 'HPOKor']].drop_duplicates()
+        self.hpo_dict = self.hpo_dict.set_index('HPOTerm')['HPOKor'].to_dict()
+        self.term_list = list(self.hpo_dict.keys())
 
         self.finished.emit()  # 작업 완료 신호 송출
 
@@ -210,6 +184,9 @@ class CNV_TestSheet(QMainWindow, form_class):
         self.cvSummary_file = 'variant_summary.csv'
         self.previous_data_URL = "https://raw.githubusercontent.com/Hoehwang/searching_report/master/previous_result_sheet.csv"
         self.previous_data = pd.read_csv(self.previous_data_URL)
+        self.synonyms_data_URL = "https://raw.githubusercontent.com/Hoehwang/searching_report/master/synonym_info.csv"
+        self.synonyms_data = pd.read_csv(self.synonyms_data_URL)
+        self.synonyms_data['Synonym_lower'] = self.synonyms_data['Synonym'].str.lower()
 
         git_csv_downloader(self.CNVinfo_file, self.CNVinfo_URL)
         git_csv_downloader(self.cvSummary_file, self.cvSummary_URL)
@@ -256,6 +233,7 @@ class CNV_TestSheet(QMainWindow, form_class):
             links = self.clinvar_cases[selected_case]
             self.recommendBrowser.clear()
             self.recommendBrowser.append("<p>".join(links))
+        self.recommendBrowser.verticalScrollBar().setValue(0)
 
     def on_text_changed(self):
         input_text = self.input_field.text().strip().lower()
@@ -265,7 +243,7 @@ class CNV_TestSheet(QMainWindow, form_class):
             return
 
         # 부분 일치 및 완전 일치 검색 - 제너레이터 사용
-        matching_terms = ((term, self.hpo_dict[term]) for term in self.term_list if input_text in term.lower())
+        matching_terms = ((term, self.hpo_dict[term]) for term in self.term_list if input_text in str(term).lower())
 
         self.dictBrowser.clear()
         result_count = 0
@@ -275,6 +253,7 @@ class CNV_TestSheet(QMainWindow, form_class):
 
         if result_count == 0:
             self.dictBrowser.append("No matching terms found.")
+        return self.dictBrowser.verticalScrollBar().setValue(0)
 
     def TargetfileOpen(self):
         fname = QFileDialog.getOpenFileName(None, 'Open Txt file', '', "TXT File(*.txt)")
@@ -296,7 +275,10 @@ class CNV_TestSheet(QMainWindow, form_class):
             self.total = len(self.input_data_df)
         except KeyError:
             return QMessageBox.warning(self, 'Warning', '인풋 파일을 확인해주세요.')
+
+        # 테스트중 - for문 주석 제거 및 인덴테이션 복원 필요
         for i in range(len(self.input_data_df)):
+            # i = 1 # 테스트 후 나중에 제거 필요
             self.counter += 1
             self.input_data = self.input_data_df.loc[i]
             self.chromosome = self.input_data['Chr']
@@ -309,6 +291,12 @@ class CNV_TestSheet(QMainWindow, form_class):
             self.cytoBand = self.input_data['cytoBand']
             self.copyRatio = self.input_data['CopyRatio']
 
+            cytoband_df = disease_info_hardcoded.hg19_cytoband[disease_info_hardcoded.hg19_cytoband['chr'] == str(self.chromosome)]
+            cytoDf_start_idx = cytoband_df[(cytoband_df['start'] <= self.Start) & (cytoband_df['end'] >= self.Start)].index[0]
+            cytoDf_end_idx = cytoband_df[(cytoband_df['start'] <= self.End) & (cytoband_df['end'] >= self.End)].index[0]
+            cytoband_df = cytoband_df.loc[cytoDf_start_idx:cytoDf_end_idx]
+            clinvar_query = [f'{self.chromosome}{pos}' for pos in cytoband_df['pos_name'].values]
+
             if self.copyRatio > 1:
                 self.typ = 'Duplication'
             else:
@@ -320,15 +308,28 @@ class CNV_TestSheet(QMainWindow, form_class):
             else:
                 target_df = self.summary_df[self.summary_df['Type'] == 'Deletion']
 
-            # 질병명 Trisomy로 오는 경우 처리
+            # 질병명 내 괄호 내용 저장 후 제거
+            self.bracket_disease = ''
+            if '(' in self.disease:
+                self.bracket_disease = re.search(r'\(.+\)', self.disease).group().strip('()')
+            disease_name_for_search = re.sub(r'\(.*\)', '', self.disease).strip().split('_')[0]
 
-            if target_df[target_df['File'].str.startswith(self.disease.split('_')[0])].empty:
-                if self.disease.startswith('Trisomy '):
-                    target_df = target_df[target_df['File'].str.startswith(self.disease.replace('Trisomy ','').split('_')[0])]
-                else:
-                    pass
-            else:
-                target_df = target_df[target_df['File'].str.startswith(self.disease.split('_')[0])]
+            target_df = target_df[target_df['File'].apply(lambda x: any(x.startswith(query) for query in clinvar_query))]
+            #
+            # if target_df.empty:
+            #     # 기본 이름으로 타겟 데이터프레임 색인
+            #     if target_df[target_df['File'].str.startswith(self.disease.split('_')[0])].empty == False:
+            #         target_df = target_df[target_df['File'].str.startswith(self.disease.split('_')[0])]
+            #
+            #     # 질병명 Trisomy로 오는 경우 처리
+            #     elif target_df[target_df['File'].str.startswith(self.disease.split('_')[0])].empty and target_df[target_df['File'].str.startswith(disease_name_for_search)].empty:
+            #         if self.disease.startswith('Trisomy '):
+            #             target_df = target_df[target_df['File'].str.startswith(self.disease.replace('Trisomy ','').split('_')[0])]
+            #         else:
+            #             pass
+            #     else:
+            #         target_df = target_df[target_df['File'].str.startswith(disease_name_for_search)]
+
 
             # 겹침 계산 및 퍼센테이지로 변환
             target_df['Overlap'] = target_df.apply(
@@ -353,8 +354,7 @@ class CNV_TestSheet(QMainWindow, form_class):
             target_df = target_df.sort_values(by=['OverlapPercentage', 'Score'], ascending=[False, False])
 
             # VariationID를 제외한 정보가 동일한 행들 찾기
-            file_info_df = target_df.groupby(['Type', 'CytogeneticLocation', 'Start', 'Stop']).filter(
-                lambda x: len(x) > 1)
+            file_info_df = target_df.groupby(['Type', 'CytogeneticLocation', 'Start', 'Stop']).filter(lambda x: len(x) > 1)
             file_info_df = file_info_df.sort_values(by='MostRecentSubmission', ascending=False)
 
             self.clinvar_cases[f'Case {self.counter}'] = []
@@ -362,25 +362,17 @@ class CNV_TestSheet(QMainWindow, form_class):
             for idx, id in enumerate([i.replace('.xml','').split('_')[-1] for i in list(file_info_df['File'])]):
                 self.clinvar_cases[f'Case {self.counter}'].append(f'<a href="https://www.ncbi.nlm.nih.gov/clinvar/variation/{id}/">Case_{self.counter}_ClinVar Link{idx+1}: {id}</a>')
 
-                #### 콤보박스로 변경 후 폐기된 부분 ####
-                # self.links.append(f'<a href="https://www.ncbi.nlm.nih.gov/clinvar/variation/{id}/">Case_{self.counter}_ClinVar Link{idx+1}: {id}</a>')
-            # if self.counter == self.total:
-            #     self.recommendBrowser.setHtml('<p>'.join(self.links))
-            # else:
-            #     self.links.append('■■■■■■■■■■■■■■■■■■■■■■■■■■■')
-            # self.recommendBrowser.setText()
-
             # 기준치 오버랩 검사
             if self.typ == 'Duplication':
                 self.justify_df = disease_info_hardcoded.data_duplication
             else:
                 self.justify_df = disease_info_hardcoded.data_deletion
             justify_df = self.justify_df[self.justify_df['disease'] == self.disease]
-            # if justify_df.empty:
-            #     justify_df
-            # print(justify_df)
+
             justify_start = int(justify_df['start'].iloc[0])
             justify_end = int(justify_df['end'].iloc[0])
+
+            justify_length = justify_end - justify_start
 
             # Start~End와 justify_start~justify_end 범위의 겹치는 부분 계산
             overlap_start = max(self.Start, justify_start)
@@ -389,9 +381,9 @@ class CNV_TestSheet(QMainWindow, form_class):
             # 겹치는 길이 계산
             self.overlap_length = max(0, overlap_end - overlap_start)
             # 겹치는 비율 계산 (퍼센트로)
-            self.justify_overlap = (self.overlap_length / self.range_length) * 100
+            self.justify_overlap = (self.overlap_length / justify_length) * 100
 
-            self.CNV_Start()
+            self.CNV_Start(self.counter)
 
         # print(self.clinvar_cases)
         # 콤보박스 키 추가
@@ -405,12 +397,17 @@ class CNV_TestSheet(QMainWindow, form_class):
 
     def set_widgets_enabled(self, enabled: bool):
         """Helper function to enable/disable UI elements during update"""
-        self.gName.setEnabled(enabled)
-        self.gMega.setEnabled(enabled)
+        self.fileName.setEnabled(enabled)
+        self.fileBrowse.setEnabled(enabled)
         self.freqCombo.setEnabled(enabled)
-        self.unknownBox.setEnabled(enabled)
-        self.addition_area.setEnabled(enabled)
-        self.startButton.setEnabled(enabled)
+        self.fileOpenButton.setEnabled(enabled)
+        self.output_area.setEnabled(enabled)
+        self.caseComboBox.setEnabled(enabled)
+        self.recommendBrowser.setEnabled(enabled)
+        self.input_field.setEnabled(enabled)
+        self.fileOpenButton.setEnabled(enabled)
+        self.dictBrowser.setEnabled(enabled)
+        self.generateButton.setEnabled(enabled)
 
     def updateCheck(self):
         self.set_widgets_enabled(False)  # Disable widgets during update
@@ -448,7 +445,7 @@ class CNV_TestSheet(QMainWindow, form_class):
         except:
             pass
 
-    def CNV_Start(self):
+    def CNV_Start(self, case_num):
         try:
             self.gname = self.disease.lower().split('_')[0]
             self.gfreq = self.freqCombo.currentText()
@@ -464,72 +461,94 @@ class CNV_TestSheet(QMainWindow, form_class):
                         continue
             else:
                 freq_condition = ['Previous']
-            filtered_df = self.df[(self.df['Name_lower'] == self.gname)]
 
-            if filtered_df.empty:
-                filtered_df = self.df[
-                    (self.df['Name_lower'].str.startswith(self.gname)) &
-                    (self.df['Name_lower'].str.contains(self.typ.lower()))
-                    ]
+            # 이음동의어 검색
+            if self.bracket_disease != '':
+                find_synonym = self.synonyms_data[self.synonyms_data['Synonym_lower'] == self.bracket_disease.lower()]
+                synonym_orphaCode = find_synonym['OrphaCode'].values[0]
+                filtered_df = self.df[(self.df['OrphaCode'] == synonym_orphaCode)]
                 if filtered_df.empty:
-                    self.gname = re.search(r'\(([^()]+)\)', self.gname).group(1)
-                    filtered_df = self.df[(self.df['Name_lower'] == self.gname)]
+                    return QMessageBox.warning(self, 'Warning', '지정된 유전병명이 없거나 올바르지 않습니다.')
+                else:
+                    original_gname = filtered_df['Name'].iloc[0]
+            else:
+                filtered_df = self.df[(self.df['Name_lower'] == self.gname)]
+                if filtered_df.empty:
+                    filtered_df = self.df[
+                        (self.df['Name_lower'].str.startswith(self.gname)) &
+                        (self.df['Name_lower'].str.contains(self.typ.lower()))
+                        ]
                     if filtered_df.empty:
-                        filtered_df = self.df[(self.df['Name_lower'] == self.disease.lower())]
+                        self.gname = re.search(r'\(([^()]+)\)', self.gname).group(1)
+                        filtered_df = self.df[(self.df['Name_lower'] == self.gname)]
                         if filtered_df.empty:
-                            return QMessageBox.warning(self, 'Warning', '지정된 유전병명이 없거나 올바르지 않습니다.')
+                            filtered_df = self.df[(self.df['Name_lower'] == self.disease.lower())]
+                            if filtered_df.empty:
+                                return QMessageBox.warning(self, 'Warning', '지정된 유전병명이 없거나 올바르지 않습니다.')
+                            else:
+                                original_gname = filtered_df['Name'].iloc[0]
                         else:
                             original_gname = filtered_df['Name'].iloc[0]
                     else:
                         original_gname = filtered_df['Name'].iloc[0]
                 else:
                     original_gname = filtered_df['Name'].iloc[0]
-            else:
-                original_gname = filtered_df['Name'].iloc[0]
+
             # print(filtered_df)
             # Previous일 때 조건 검색
             if self.gfreq == 'Previous':
                 temp_df = filtered_df[filtered_df['HPOFrequency'] == 'Previous']
                 # print(temp_df)
                 if temp_df.empty:
-                    QMessageBox.warning(self, 'Warning', '유발증상에 대한 이전 데이터가 없습니다.\nFrequency를 Frequent (79-30%) 이상으로 설정하여 유발증상을 기록합니다.')
-                    freq_condition = ['Very frequent (99-80%)','Obligate (100%)']
+                    QMessageBox.warning(self, 'Warning', f'{self.disease}: 유발증상에 대한 이전 데이터가 없습니다.\nFrequency를 전체로 설정하여 유발증상을 기록합니다.')
+                    freq_condition = ['Excluded (0%)', 'Very rare (<4-1%)', 'Occasional (29-5%)',
+                                      'Frequent (79-30%)', 'Very frequent (99-80%)', 'Obligate (100%)']
 
-            filtered_df = filtered_df[(filtered_df['HPOFrequency'].isin(freq_condition))]
+            symptom_df = filtered_df[(filtered_df['HPOFrequency'].isin(freq_condition))]
 
-            if filtered_df.empty:
-                return QMessageBox.warning(self, 'Warning', '지정 범위 내에 유발증상이 없습니다.')
+            if symptom_df.empty:
+                QMessageBox.warning(self, 'Warning', f'{self.disease}: 지정 범위 내에 유발증상이 없습니다. \nFrequency를 전체로 설정하여 유발증상을 기록합니다.')
+                freq_condition = ['Previous', 'Excluded (0%)', 'Very rare (<4-1%)', 'Occasional (29-5%)',
+                                  'Frequent (79-30%)', 'Very frequent (99-80%)', 'Obligate (100%)']
+                symptom_df = filtered_df[(filtered_df['HPOFrequency'].isin(freq_condition))]
+                # print(symptom_df)
 
+                if symptom_df.empty:
+                    return QMessageBox.warning(self, 'Warning', f'{self.disease}: 결과 시트를 출력할 수 없습니다.')
+
+
+            self.orpha_code = symptom_df['OrphaCode'].iloc[0]
+            if freq_condition != ['Previous']:
+                self.input_disease = ', '.join([f"{row['HPOKor']}({row['HPOTerm']})" for index, row in symptom_df.iterrows()])
             else:
-                self.orpha_code = filtered_df['OrphaCode'].iloc[0] if not filtered_df.empty else None
-                if freq_condition != ['Previous']:
-                    self.input_disease = ', '.join([f"{row['HPOKor']}({row['HPOTerm']})" for index, row in filtered_df.iterrows()])
-                else:
-                    self.input_disease = filtered_df['HPOKor'].iloc[0].replace('/',', ')
+                self.input_disease = symptom_df['HPOKor'].iloc[0].replace('/',', ')
 
-                sheetText = f"상기 검사에 따른 태아의 결과는 {original_gname}({round(self.overlap_length / 1000000, 1)}Mb) 에 대하여 고위험군입니다.\n\n"
-                sheetText += f"{original_gname}으로서의 공통증상으로 {self.input_disease} 등이 나타날 수 있습니다.\n\n"
+            sheetText = f'======= Case {case_num} =======\n'
+            sheetText += f"상기 검사에 따른 태아의 결과는 {original_gname}({round(self.overlap_length / 1000000, 1)}Mb) 에 대하여 고위험군입니다.\n\n"
+            sheetText += f"{original_gname}으로서의 공통증상으로 {self.input_disease} 등이 나타날 수 있습니다.\n\n"
 
-                # 범위가 20~70% 범위일 때
-                if self.justify_overlap >= 30:
-                    condition = f'{self.typ} 범위에서의 알려진 증상으로 *** ClinVar 내용 입력 필요 *** 등이 나타날 수 있습니다.\n\n'
-                if self.justify_overlap >= 70:
-                    condition += f'{self.typ} 범위가 {original_gname}의 알려진 범위의 대부분을 차지하기 때문에 위에 나열한 증상이 나타날 가능성이 높습니다.\n\n'
-                elif self.justify_overlap == 100:
-                    condition += f'{self.typ} 범위가 {original_gname}의 알려진 범위를 모두 포함하기 때문에 위에 나열한 증상이 나타날 가능성이 높습니다.\n\n'
-                elif self.justify_overlap < 30:
-                    condition = f'그렇지만, 해당 태아의 경우 {self.disease} 범위 중 {self.cytoBand}에만 해당되며 총 범위의 {self.justify_overlap}% 정도를 차지하고 이 범위 수준에서의 증상은 알려지지 않았습니다.\n\n'
+            # TODO 단일 Cytoband는 "총 범위의 {round(self.justify_overlap,1)}% 정도를 차지하고" 지울 것
 
-                sheetText += f'{condition}'
-                sheetText += f"*해당 syndrome의 증상은 사람마다 발현이나 정도가 다르며, 해당되는 증상이 나타나지 않거나 위에서 언급하지 않은 증상이 나타날 수도 있습니다.\n\n상세 내용은 아래에서 찾아보실 수 있습니다.\nOrphanet (http://www.orpha.net) ORPHA code : {self.orpha_code}\n\n"
-                sheetText += f"-----------------------------------------------------------------------------------------------\n참고용\n\nchr{self.chromosome}:{self.Start}-{self.End}\n\n"
-                if self.counter < len(self.input_data_df):
-                    sheetText += f"-----------------------------------------------------------------------------------------------\n\n"
-                self.result_text += sheetText
+            # 범위가 20~70% 범위일 때
+            if self.justify_overlap >= 30:
+                condition = f'{self.typ} 범위에서의 알려진 증상으로 *** ClinVar 내용 입력 필요 *** 등이 나타날 수 있습니다.\n\n'
+            if self.justify_overlap >= 70:
+                condition += f'{self.typ} 범위가 {original_gname}의 알려진 범위의 대부분을 차지하기 때문에 위에 나열한 증상이 나타날 가능성이 높습니다.\n\n'
+            elif self.justify_overlap == 100:
+                condition += f'{self.typ} 범위가 {original_gname}의 알려진 범위를 모두 포함하기 때문에 위에 나열한 증상이 나타날 가능성이 높습니다.\n\n'
+            elif self.justify_overlap < 30:
+                condition = f'그렇지만, 해당 태아의 경우 {self.disease} 범위 중 {self.cytoBand}에만 해당되며 총 범위의 {round(self.justify_overlap)}% 정도를 차지하고 이 범위 수준에서의 증상은 알려지지 않았습니다.\n\n'
 
-                if self.counter == self.total:
-                    return self.output_area.setText(self.result_text)
-                # return self.CNV_Save(sheetText)
+            sheetText += f'{condition}'
+            sheetText += f"*해당 syndrome의 증상은 사람마다 발현이나 정도가 다르며, 해당되는 증상이 나타나지 않거나 위에서 언급하지 않은 증상이 나타날 수도 있습니다.\n\n상세 내용은 아래에서 찾아보실 수 있습니다.\nOrphanet (http://www.orpha.net) ORPHA code : {self.orpha_code}\n\n"
+            sheetText += f"-----------------------------------------------------------------------------------------------\n참고용\n\nchr{self.chromosome}:{self.Start}-{self.End}\n\n"
+            if self.counter < len(self.input_data_df):
+                sheetText += f"-----------------------------------------------------------------------------------------------\n\n"
+            self.result_text += sheetText
+
+            if self.counter == self.total:
+                return self.output_area.setText(self.result_text)
+            # return self.CNV_Save(sheetText)
 
         except Exception as e:
             return QMessageBox.warning(self, 'Warning', f'알려지지 않은 오류:\n{e}')

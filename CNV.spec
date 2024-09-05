@@ -8,7 +8,7 @@ a = Analysis(
     ['CNV.py'],
     pathex=[],
     binaries=[],
-    datas=[('CNV.ui','.')],
+    datas=[('CNV.ui','.'),],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -41,4 +41,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+	icon='gc_icon.ico',
 )
