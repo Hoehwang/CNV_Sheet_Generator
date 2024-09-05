@@ -241,19 +241,21 @@ class CNV_TestSheet(QMainWindow, form_class):
         if not input_text:
             self.dictBrowser.clear()
             return
+        elif len(input_text) > 3:
+            # 부분 일치 및 완전 일치 검색 - 제너레이터 사용
+            matching_terms = ((term, self.hpo_dict[term]) for term in self.term_list if input_text in str(term).lower())
 
-        # 부분 일치 및 완전 일치 검색 - 제너레이터 사용
-        matching_terms = ((term, self.hpo_dict[term]) for term in self.term_list if input_text in str(term).lower())
+            self.dictBrowser.clear()
+            result_count = 0
+            for term, kor in matching_terms:
+                self.dictBrowser.append(f"{kor}")
+                result_count += 1
 
-        self.dictBrowser.clear()
-        result_count = 0
-        for term, kor in matching_terms:
-            self.dictBrowser.append(f"{kor}")
-            result_count += 1
-
-        if result_count == 0:
-            self.dictBrowser.append("No matching terms found.")
-        return self.dictBrowser.verticalScrollBar().setValue(0)
+            if result_count == 0:
+                self.dictBrowser.append("No matching terms found.")
+            return self.dictBrowser.verticalScrollBar().setValue(0)
+        else:
+            self.dictBrowser.clear()
 
     def TargetfileOpen(self):
         fname = QFileDialog.getOpenFileName(None, 'Open Txt file', '', "TXT File(*.txt)")
